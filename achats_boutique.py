@@ -1,79 +1,91 @@
 import streamlit as st
 import pandas as pd
-import gspread
-from oauth2client.service_account import ServiceAccountCredentials
+import os
 from datetime import datetime
-import plotly.express as px
-import json
 
-# --- CONFIGURATION ---
-st.set_page_config(page_title="Collection Manager", layout="wide", page_icon="☁️")
+# --- CONFIGURATION DE LA PAGE ---
+st.set_page_config(page_title="Gestion Dépenses", page_icon="💰", layout="centered")
 
-# --- CONNEXION SECURISEE (CLOUD COMPATIBLE) ---
-scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
-
-try:
-    # On essaie d'abord la méthode "Cloud" (Secrets Streamlit)
-    if "gcp_service_account" in st.secrets:
-        creds_dict = st.secrets["gcp_service_account"]
-        creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
-    # Sinon, on essaie la méthode "PC Local" (Fichier)
-    else:
-        creds = ServiceAccountCredentials.from_json_keyfile_name("secrets.json", scope)
-        
-    client = gspread.authorize(creds)
-    sheet = client.open("Achats_Boutique_DB").sheet1
-
-except Exception as e:
-    st.error(f"Erreur de connexion : {e}")
-    st.info("Sur le Cloud, vérifie que les 'Secrets' sont bien configurés.")
-    st.stop()
+# Nom du fichier Excel
+FICHIER_EXCEL = 'depenses.xlsx'
 
 # --- FONCTIONS ---
-def load_data():
-    data = sheet.get_all_records()
-    if data:
-        return pd.DataFrame(data)
-    else:
-        return pd.DataFrame(columns=["Saison", "Année", "Marque", "Montant_Commande", "Date_Saisie", "Commentaire"])
+def charger_donnees():
+    if not os.path.exists(FICHIER_EXCEL):
+        # Création d'un fichier vide avec les bonnes colonnes si inexistant
+        df = pd.DataFrame(columns=["Date", "Description", "Montant", "Categorie"])
+        df.to_excel(FICHIER_EXCEL, index=False)
+        return df
+    return pd.read_excel(FICHIER_EXCEL)
 
-def add_entry(row_data):
-    sheet.append_row(row_data)
+def sauvegarder_donnees(df):
+    df.to_excel(FICHIER_EXCEL, index=False)
 
-# Chargement
-df = load_data()
+# --- INTERFACE PRINCIPALE ---
+st.title("💸 Suivi des Dépenses")
+st.markdown("---")
 
-# --- INTERFACE ---
-st.title("☁️ Collection Manager • Online")
+# 1. Chargement des données
+df = charger_donnees()
 
-tab1, tab2, tab3 = st.tabs(["📊 Stats", "➕ Saisir", "🗂️ Liste"])
+# 2. Formulaire d'ajout (Dans la barre latérale pour faire propre)
+with st.sidebar:
+    st.header("Nouvelle Dépense")
+    with st.form("ajout_form", clear_on_submit=True):
+        desc = st.text_input("Description (ex: Levi's)")
+        montant = st.number_input("Montant (€)", min_value=0.0, format="%.2f")
+        categorie = st.selectbox("Catégorie", ["Vêtements", "Alimentation", "Loisirs", "Autre"])
+        date = st.date_input("Date", datetime.now())
+        
+        submit = st.form_submit_button("Ajouter")
+        
+        if submit and desc:
+            nouvelle_ligne = pd.DataFrame([{
+                "Date": date,
+                "Description": desc,
+                "Montant": montant,
+                "Categorie": categorie
+            }])
+            df = pd.concat([df, nouvelle_ligne], ignore_index=True)
+            sauvegarder_donnees(df)
+            st.success("Ajouté !")
+            st.rerun() # Rafraichit la page immédiatement
 
-with tab1:
-    if not df.empty:
-        df["Montant_Commande"] = pd.to_numeric(df["Montant_Commande"], errors='coerce')
-        total = df["Montant_Commande"].sum()
-        st.metric("Budget Total", f"{total:,.0f} €")
-        fig = px.bar(df, x="Marque", y="Montant_Commande", color="Marque")
-        st.plotly_chart(fig, use_container_width=True)
+# 3. Affichage et Suppression
+st.subheader("Historique")
 
-with tab2:
-    st.subheader("Nouvelle Commande")
-    with st.form("cloud_form"):
-        c1, c2 = st.columns(2)
-        with c1:
-            saison = st.selectbox("Saison", ["AH", "PE"])
-            annee = st.selectbox("Année", [2025, 2026, 2027])
-            marque = st.text_input("Marque (ex: DIESEL)").upper()
-        with c2:
-            montant = st.number_input("Montant €", step=50.0)
-            note = st.text_area("Note")
-            
-        if st.form_submit_button("Envoyer au Cloud 🚀"):
-            if marque and montant > 0:
-                add_entry([saison, annee, marque, montant, datetime.now().strftime("%Y-%m-%d"), note])
-                st.success("Sauvegardé !")
-                st.balloons()
-
-with tab3:
-    if st.button("Actualiser"): st.rerun()
+if not df.empty:
+    # On affiche les données avec un design propre
+    # Pour la suppression, on utilise une astuce : une case à cocher ou un selecteur
+    
+    # Affiche un tableau interactif
     st.dataframe(df, use_container_width=True)
+
+    st.markdown("### 🗑️ Zone de suppression")
+    col1, col2 = st.columns([3, 1])
+    
+    with col1:
+        # Liste déroulante pour choisir quoi supprimer (plus sûr qu'un bouton partout)
+        options = df.index.astype(str) + " : " + df["Description"] + " (" + df["Montant"].astype(str) + "€)"
+        to_delete = st.selectbox("Sélectionne la ligne à supprimer", options, index=None, placeholder="Choisis une dépense...")
+    
+    with col2:
+        st.write("") # Espacement
+        st.write("") 
+        if st.button("Supprimer ❌", type="primary"):
+            if to_delete:
+                index_to_drop = int(to_delete.split(" : ")[0])
+                df = df.drop(index_to_drop).reset_index(drop=True)
+                sauvegarder_donnees(df)
+                st.success("Dépense supprimée !")
+                st.rerun()
+            else:
+                st.warning("Sélectionne une ligne d'abord.")
+
+    # 4. Petit bonus : Total
+    st.markdown("---")
+    total = df["Montant"].sum()
+    st.metric(label="Total des dépenses", value=f"{total} €")
+
+else:
+    st.info("Aucune dépense pour le moment.")
